@@ -40,6 +40,7 @@ module Constants =
     [<Literal>]
     let AMAZON_API_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
 
+type SpapiOAuth = class end
 
 module Views =
     open Falco.Markup
@@ -75,19 +76,21 @@ module Handlers =
     let AuthorizePost: HttpHandler =
         fun ctx ->
             let config = ctx.Plug<IConfiguration>()
-            let logger = ctx.Plug<ILogger>()
+            let logger = ctx.Plug<ILogger<SpapiOAuth>>()
 
             logger.LogInformation "Beginning Authorization Request..."
-            let state = new System.Guid() |> _.ToByteArray()
+            let state = System.Guid.NewGuid()
             let appId = config.GetValue<string> "SPAPI_APP_ID"
 
-            ctx.Session.Set(Constants.SPAPI_STATE_SESSION_KEY, state)
+            ctx.Session.Set(Constants.SPAPI_STATE_SESSION_KEY, state.ToByteArray())
+
 
             (Response.withHeaders [
                 "Referrer-Policy", "no-referrer"
                 "Location",
                 $"{Constants.SPAPI_OAUTH_URL}{Constants.SPAPI_OAUTH_PATH}?state={state}&application_id={appId}"
              ]
+             >> Response.withStatusCode 302
              >> Response.ofEmpty)
                 ctx
 
@@ -97,7 +100,7 @@ module Handlers =
             // Retrieve needed Dependencies
             let clientFactory = ctx.Plug<IHttpClientFactory>()
             let config = ctx.Plug<IConfiguration>()
-            let logger = ctx.Plug<ILogger>()
+            let logger = ctx.Plug<ILogger<SpapiOAuth>>()
 
             logger.LogInformation "Redirect received"
 
@@ -174,9 +177,16 @@ module Program =
     ]
 
     let private ConfigureServices (services: IServiceCollection) =
-        services.AddLogging().AddDistributedMemoryCache().AddSession()
+        services
+            .AddLogging()
+            .AddDistributedMemoryCache()
+            .AddSession(fun opts ->
+                opts.IdleTimeout <- System.TimeSpan.FromSeconds 10.
+                opts.Cookie.HttpOnly <- true
+                opts.Cookie.IsEssential <- true)
 
-    let private ConfigureWApp (wapp: WebApplication) = wapp.UseRouting().UseFalco(endpoints)
+    let private ConfigureWApp (wapp: WebApplication) =
+        wapp.UseRouting().Use(fun (appl: IApplicationBuilder) -> appl.UseSession()).UseFalco(endpoints)
 
     let Build () =
         let builder = WebApplication.CreateBuilder()
